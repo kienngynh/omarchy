@@ -1,10 +1,65 @@
 #!/bin/bash
 
-browser=$(xdg-settings get default-web-browser)
+# This script launches a URL as a web application, using the appropriate
+# flag for the system's default browser.
+# It supports Chromium-based browsers (--app) and Firefox (--ssb).
 
-case $browser in
-google-chrome* | brave-browser* | microsoft-edge* | opera* | vivaldi*) ;;
-*) browser="chromium.desktop" ;;
+# Get the default web browser's .desktop file name
+browser_desktop_file=$(xdg-settings get default-web-browser)
+
+# If the setting is empty, default to Chromium
+if [ -z "$browser_desktop_file" ]; then
+    echo "Warning: Could not determine default web browser. Defaulting to chromium.desktop." >&2
+    browser_desktop_file="chromium.desktop"
+fi
+
+# Find the full path to the browser's .desktop file
+# We search in standard user and system application directories.
+desktop_file_path=$(find ~/.local/share/applications/ ~/.nix-profile/share/applications/ /usr/share/applications/ -name "$browser_desktop_file" 2>/dev/null | head -1)
+
+# If the .desktop file can't be found, exit with an error
+if [ -z "$desktop_file_path" ]; then
+    echo "Error: Could not find .desktop file for '$browser_desktop_file'" >&2
+    exit 1
+fi
+
+# From the .desktop file, extract the main executable command.
+# This sed command finds the 'Exec=' line and captures everything up to the
+# first space or field code (like %U), which is usually the executable path.
+executable_path=$(sed -n 's/^Exec=\([^ %]*\).*/\1/p' "$desktop_file_path" | head -1)
+
+# Check if we successfully got an executable path
+if [ -z "$executable_path" ]; then
+    echo "Error: Could not parse Exec= line from '$desktop_file_path'" >&2
+    exit 1
+fi
+
+# The first argument to this script should be the URL
+url="$1"
+if [ -z "$url" ]; then
+    echo "Usage: $0 <URL> [additional browser arguments]" >&2
+    exit 1
+fi
+
+# Determine which flag to use based on the browser
+case "$browser_desktop_file" in
+    firefox*.desktop)
+        # For Firefox, we use the --ssb (Site-Specific Browser) flag.
+        # IMPORTANT: This feature must be enabled in Firefox first!
+        # 1. Go to about:config in Firefox.
+        # 2. Search for browser.ssb.enabled and set it to true.
+        exec setsid uwsm app -- "$executable_path" --ssb "$url" "${@:2}"
+        ;;
+
+    google-chrome*|brave-browser*|microsoft-edge*|opera*|vivaldi*|chromium*)
+        # For Chromium-based browsers, we use the --app flag.
+        exec setsid uwsm app -- "$executable_path" --app="$url" "${@:2}"
+        ;;
+
+    *)
+        # As a fallback for unknown browsers, we'll try the common --app flag.
+        echo "Warning: Unrecognized browser '$browser_desktop_file'. Attempting to use --app flag." >&2
+        exec setsid uwsm app -- "$executable_path" --app="$url" "${@:2}"
+        ;;
 esac
 
-exec setsid uwsm app -- $(sed -n 's/^Exec=\([^ ]*\).*/\1/p' {~/.local,~/.nix-profile,/usr}/share/applications/$browser 2>/dev/null | head -1) --app="$1" "${@:2}"
